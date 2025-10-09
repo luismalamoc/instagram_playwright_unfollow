@@ -1,0 +1,15 @@
+{
+  "trusted_usernames": [
+    "examples_user1",
+    "example_user2"
+    
+    
+  ],
+  "description": "List of accounts that will NOT be unfollowed. Add the usernames (without @) of accounts you want to keep following. You can add as many as you want.",
+  "instructions": [
+    "1. Replace the examples with real usernames you want to protect",
+    "2. Usernames should be without the @ symbol",
+    "3. You can add or remove accounts from the list",
+    "4. Save the file after making changes"
+  ]
+}
