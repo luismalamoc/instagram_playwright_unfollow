@@ -361,12 +361,18 @@ class InstagramPlaywrightBot:
     async def extract_username_from_element(self, user_element):
         """Extract username from user element"""
         try:
+            # Validate that user_element is a proper Playwright element
+            if not user_element or not hasattr(user_element, 'query_selector'):
+                return None
+                
             # Try different selectors for username
             username_selectors = [
                 'span._ap3a._aaco._aacw._aacx._aad7._aade',
                 'a[href*="/"] span[dir="auto"]',
                 '.notranslate',
-                'a[role="link"] span'
+                'a[role="link"] span',
+                'span[title]',
+                'a span:first-child'
             ]
             
             for selector in username_selectors:
@@ -375,42 +381,56 @@ class InstagramPlaywrightBot:
                     if username_elem:
                         username = await username_elem.text_content()
                         if username and username.strip() and not username.isspace():
-                            return username.strip()
-                except:
+                            # Clean the username
+                            clean_username = username.strip().replace('@', '')
+                            if clean_username and len(clean_username) > 0:
+                                return clean_username
+                except Exception as e:
                     continue
             
             return None
             
-        except:
+        except Exception as e:
+            print(f"⚠️  Error extracting username: {str(e)[:50]}...")
             return None
     
     async def find_unfollow_button(self, user_element):
         """Find the unfollow button for a user"""
         try:
+            # Validate that user_element is a proper Playwright element
+            if not user_element or not hasattr(user_element, 'query_selector'):
+                return None
+                
             # Look for "Siguiendo" or "Following" button
             button_selectors = [
                 'button:has-text("Siguiendo")',
                 'button:has-text("Following")',
                 'button[class*="_acan _acap _acas _aj1-"]',
-                'button[class*="_acan _acap _acat _aj1-"]'
+                'button[class*="_acan _acap _acat _aj1-"]',
+                'button[type="button"]:has-text("Siguiendo")',
+                'button[type="button"]:has-text("Following")'
             ]
             
             for selector in button_selectors:
                 try:
                     button = await user_element.query_selector(selector)
                     if button:
-                        return button
-                except:
+                        # Check if button is actually visible and clickable
+                        is_visible = await button.is_visible()
+                        if is_visible:
+                            return button
+                except Exception as e:
                     continue
             
             return None
             
-        except:
+        except Exception as e:
+            print(f"⚠️  Error finding unfollow button: {str(e)[:50]}...")
             return None
     
-    async def process_unfollow_list(self, dry_run=True, max_unfollows=20):
-        """Process the following list and unfollow users"""
-        print(f"\n🎯 Starting {'simulation' if dry_run else 'real unfollow'} (max: {max_unfollows})")
+    async def process_unfollow_list(self, dry_run=True):
+        """Process the following list and unfollow users - scrolls to end and processes all"""
+        print(f"\n🎯 Starting {'simulation' if dry_run else 'real unfollow'} - will process ALL non-trusted accounts")
         
         unfollowed_count = 0
         protected_count = 0
@@ -438,7 +458,7 @@ class InstagramPlaywrightBot:
             consecutive_no_new_users = 0
             max_scroll_attempts = 5  # Increase scroll attempts
             
-            while unfollowed_count < max_unfollows and consecutive_no_new_users < max_scroll_attempts:
+            while consecutive_no_new_users < max_scroll_attempts:
                 # Get user containers based on interface type
                 if is_modal:
                     # Modal selectors
@@ -477,9 +497,6 @@ class InstagramPlaywrightBot:
                 current_batch_users = set()
                 
                 for container in user_containers:
-                    if unfollowed_count >= max_unfollows:
-                        break
-                    
                     try:
                         # Extract username
                         username = await self.extract_username_from_element(container)
@@ -530,15 +547,15 @@ class InstagramPlaywrightBot:
                                 # Longer delay after unfollow
                                 await self.human_delay(3, 6)
                                 
-                            except:
-                                print(f"⚠️  Could not confirm unfollow for @{username}")
+                            except Exception as unfollow_error:
+                                print(f"⚠️  Could not confirm unfollow for @{username}: {unfollow_error}")
                                 errors += 1
                         
                         # Random delay between users
                         await self.human_delay(1, 2)
                         
                     except Exception as e:
-                        print(f"❌ Error processing user: {e}")
+                        print(f"❌ Error processing user container: {str(e)[:100]}...")
                         errors += 1
                         continue
                 
@@ -573,12 +590,15 @@ class InstagramPlaywrightBot:
                             await asyncio.sleep(1)
                             
                             # Alternative: Use mouse wheel on the modal
-                            box = await modal.bounding_box()
-                            if box:
-                                await self.page.mouse.move(box['x'] + box['width']/2, box['y'] + box['height']/2)
-                                for _ in range(5):
-                                    await self.page.mouse.wheel(0, 500)
-                                    await asyncio.sleep(0.3)
+                            try:
+                                box = await modal.bounding_box()
+                                if box:
+                                    await self.page.mouse.move(box['x'] + box['width']/2, box['y'] + box['height']/2)
+                                    for _ in range(5):
+                                        await self.page.mouse.wheel(0, 500)
+                                        await asyncio.sleep(0.3)
+                            except Exception as scroll_error:
+                                print(f"   ⚠️  Mouse wheel scroll failed: {scroll_error}")
                             
                             # Check if scroll worked
                             after_scroll = await self.page.evaluate('document.querySelector(\'[role="dialog"]\').scrollTop')
@@ -719,11 +739,6 @@ async def main():
     headless_choice = input("🖥️  Use GUI mode to see what happens? (Y/n): ").strip().lower()
     headless = headless_choice == 'n'
     
-    try:
-        max_unfollows = int(input("🔢 Maximum unfollows (default 20): ") or "20")
-    except ValueError:
-        max_unfollows = 20
-    
     # Create bot instance
     bot = InstagramPlaywrightBot(username, password, headless=headless, browser_type=browser_type)
     
@@ -743,7 +758,7 @@ async def main():
         
         # Run simulation first
         print(f"\n🔍 Running SIMULATION first...")
-        await bot.process_unfollow_list(dry_run=True, max_unfollows=max_unfollows)
+        await bot.process_unfollow_list(dry_run=True)
         
         # Ask for confirmation
         print(f"\n" + "="*45)
@@ -751,7 +766,7 @@ async def main():
         
         if proceed == 'YES':
             print(f"\n🚀 Starting REAL unfollow process...")
-            await bot.process_unfollow_list(dry_run=False, max_unfollows=max_unfollows)
+            await bot.process_unfollow_list(dry_run=False)
         else:
             print("✅ Finished in simulation mode only")
         
