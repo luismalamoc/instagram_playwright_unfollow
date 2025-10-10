@@ -54,20 +54,21 @@ class InstagramPlaywrightBot:
         self.playwright = None
         
     def load_trusted_accounts(self):
-        """Load trusted accounts from JSON file"""
+        """Load trusted accounts from JSON file as a set for O(1) lookup"""
         try:
             with open('trusted_accounts.json', 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 accounts = data.get('trusted_usernames', [])
                 print(f"✅ Loaded {len(accounts)} trusted accounts")
-                return [account.lower().strip() for account in accounts]
+                # Return a set for O(1) lookup efficiency
+                return set(account.lower().strip() for account in accounts)
         except FileNotFoundError:
             print("⚠️  trusted_accounts.json not found - creating example file")
             self.create_example_trusted_file()
-            return []
+            return set()
         except Exception as e:
             print(f"❌ Error loading trusted accounts: {e}")
-            return []
+            return set()
     
     def create_example_trusted_file(self):
         """Create example trusted accounts file"""
@@ -428,9 +429,9 @@ class InstagramPlaywrightBot:
             print(f"⚠️  Error finding unfollow button: {str(e)[:50]}...")
             return None
     
-    async def process_unfollow_list(self, dry_run=True):
-        """Process the following list and unfollow users - scrolls to end and processes all"""
-        print(f"\n🎯 Starting {'simulation' if dry_run else 'real unfollow'} - will process ALL non-trusted accounts")
+    async def process_unfollow_list(self):
+        """Process the following list and unfollow users in real-time"""
+        print(f"\n🎯 Starting real-time unfollow process")
         
         unfollowed_count = 0
         protected_count = 0
@@ -456,216 +457,291 @@ class InstagramPlaywrightBot:
                     return
             
             consecutive_no_new_users = 0
-            max_scroll_attempts = 5  # Increase scroll attempts
+            max_scroll_attempts = 5
             
             while consecutive_no_new_users < max_scroll_attempts:
-                # Get user containers based on interface type
-                if is_modal:
-                    # Modal selectors
-                    user_containers = await self.page.query_selector_all(
-                        '[role="dialog"] div[class*="x1dm5mii x16mil14 xi81zsa x1yutycm x1lliihq x193iq5w xh8yej3"]'
-                    )
-                    
-                    if not user_containers:
-                        print("⚠️  No user containers found in modal, trying alternative selectors...")
-                        alternative_selectors = [
-                            '[role="dialog"] div[style*="flex-direction: row"]',
-                            '[role="dialog"] div:has(img[alt*="foto"])',
-                            '[role="dialog"] div:has(button:has-text("Siguiendo"))',
-                            '[role="dialog"] div:has(button:has-text("Following"))',
-                            '[role="dialog"] > div > div > div > div'
-                        ]
-                        
-                        for selector in alternative_selectors:
-                            user_containers = await self.page.query_selector_all(selector)
-                            if user_containers:
-                                print(f"✅ Found {len(user_containers)} containers with: {selector}")
-                                break
-                else:
-                    # Page selectors
-                    user_containers = await self.page.query_selector_all(
-                        'article div[class*="x1dm5mii"], div:has(button:has-text("Siguiendo")), div:has(button:has-text("Following"))'
-                    )
-                
-                print(f"📊 Found {len(user_containers)} user containers")
+                # Get current user containers
+                user_containers = await self.get_user_containers(is_modal)
                 
                 if not user_containers:
-                    print("❌ No user containers found at all")
+                    print("❌ No user containers found")
                     break
                 
                 new_users_found = False
-                current_batch_users = set()
                 
+                # Process each container immediately
                 for container in user_containers:
                     try:
+                        # Validate container element
+                        if not container or isinstance(container, dict):
+                            continue
+                        
+                        # Check if element is still valid
+                        try:
+                            await container.is_visible()
+                        except Exception:
+                            continue
+                        
                         # Extract username
                         username = await self.extract_username_from_element(container)
                         
                         if not username or username in processed_users:
                             continue
                         
-                        # Add to current batch to track progress
-                        current_batch_users.add(username)
                         processed_users.add(username)
                         new_users_found = True
                         
                         print(f"\n👤 Processing: @{username}")
                         
-                        # Check if user is trusted
+                        # Check if user is trusted (O(1) lookup with set)
                         if username.lower() in self.trusted_accounts:
                             print(f"🛡️  PROTECTED: @{username}")
                             protected_count += 1
                             continue
                         
-                        # Find unfollow button
-                        unfollow_button = await self.find_unfollow_button(container)
+                        # Find and click unfollow button immediately
+                        success = await self.unfollow_user(container, username)
                         
-                        if not unfollow_button:
-                            print(f"⚠️  No unfollow button found for @{username}")
-                            continue
-                        
-                        if dry_run:
-                            print(f"🎯 [SIMULATION] Would unfollow: @{username}")
+                        if success:
                             unfollowed_count += 1
+                            print(f"✅ Unfollowed: @{username}")
+                            # Delay after successful unfollow
+                            await self.human_delay(3, 6)
                         else:
-                            print(f"🎯 Unfollowing: @{username}")
-                            
-                            # Click the following button
-                            await unfollow_button.click()
-                            await self.human_delay(0.5, 1)
-                            
-                            # Look for confirmation dialog
-                            try:
-                                confirm_button = await self.page.wait_for_selector(
-                                    'button:has-text("Dejar de seguir"), button:has-text("Unfollow")',
-                                    timeout=3000
-                                )
-                                await confirm_button.click()
-                                print(f"✅ Unfollowed: @{username}")
-                                unfollowed_count += 1
-                                
-                                # Longer delay after unfollow
-                                await self.human_delay(3, 6)
-                                
-                            except Exception as unfollow_error:
-                                print(f"⚠️  Could not confirm unfollow for @{username}: {unfollow_error}")
-                                errors += 1
+                            errors += 1
                         
-                        # Random delay between users
+                        # Small delay between users
                         await self.human_delay(1, 2)
                         
                     except Exception as e:
-                        print(f"❌ Error processing user container: {str(e)[:100]}...")
+                        print(f"❌ Error processing user: {str(e)[:100]}...")
                         errors += 1
                         continue
                 
-                # Show progress for this batch
-                if current_batch_users:
-                    print(f"📊 Processed {len(current_batch_users)} new users in this batch")
-                    consecutive_no_new_users = 0  # Reset counter when we find new users
-                else:
-                    print(f"📊 No new users found in this batch")
-                
+                # Handle scrolling if no new users found
                 if not new_users_found:
                     consecutive_no_new_users += 1
-                    print(f"📜 No new users found, scrolling to load more... (attempt {consecutive_no_new_users}/{max_scroll_attempts})")
+                    print(f"📜 No new users found, scrolling... (attempt {consecutive_no_new_users}/{max_scroll_attempts})")
                     
-                    # Simple and direct scrolling approach
-                    if is_modal:
-                        print("🔄 Scrolling modal down...")
-                        # Get modal element and scroll it
-                        try:
-                            modal = await self.page.wait_for_selector('[role="dialog"]', timeout=5000)
-                            
-                            # Get current scroll position
-                            before_scroll = await self.page.evaluate('document.querySelector(\'[role="dialog"]\').scrollTop')
-                            print(f"   Before scroll: {before_scroll}")
-                            
-                            # Scroll down using multiple methods
-                            await self.page.evaluate('document.querySelector(\'[role="dialog"]\').scrollTop += 1000')
-                            await asyncio.sleep(1)
-                            
-                            # Scroll to bottom to trigger loading
-                            await self.page.evaluate('document.querySelector(\'[role="dialog"]\').scrollTop = document.querySelector(\'[role="dialog"]\').scrollHeight')
-                            await asyncio.sleep(1)
-                            
-                            # Alternative: Use mouse wheel on the modal
-                            try:
-                                box = await modal.bounding_box()
-                                if box:
-                                    await self.page.mouse.move(box['x'] + box['width']/2, box['y'] + box['height']/2)
-                                    for _ in range(5):
-                                        await self.page.mouse.wheel(0, 500)
-                                        await asyncio.sleep(0.3)
-                            except Exception as scroll_error:
-                                print(f"   ⚠️  Mouse wheel scroll failed: {scroll_error}")
-                            
-                            # Check if scroll worked
-                            after_scroll = await self.page.evaluate('document.querySelector(\'[role="dialog"]\').scrollTop')
-                            print(f"   After scroll: {after_scroll}")
-                            
-                            if after_scroll > before_scroll:
-                                print("   ✅ Modal scrolled successfully")
-                            else:
-                                print("   ⚠️  Modal may not have scrolled")
-                                
-                        except Exception as e:
-                            print(f"   ❌ Modal scroll failed: {e}")
-                    else:
-                        print("🔄 Scrolling page down...")
-                        # Page scrolling
-                        before_y = await self.page.evaluate('window.pageYOffset')
-                        print(f"   Before scroll: {before_y}")
-                        
-                        await self.page.evaluate('window.scrollBy(0, 1000)')
-                        await asyncio.sleep(1)
-                        await self.page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
-                        await asyncio.sleep(1)
-                        
-                        after_y = await self.page.evaluate('window.pageYOffset')
-                        print(f"   After scroll: {after_y}")
-                        
-                        if after_y > before_y:
-                            print("   ✅ Page scrolled successfully")
-                        else:
-                            print("   ⚠️  Page may not have scrolled")
+                    # Store count before scroll
+                    containers_before = len(user_containers)
                     
-                    # Wait for content to load
+                    scroll_success = await self.scroll_for_more_users(is_modal)
+                    if not scroll_success:
+                        print("❌ Could not scroll, stopping")
+                        break
+                    
+                    # Wait for new content to load
                     print("⏳ Waiting for new content to load...")
-                    await self.human_delay(4, 6)
+                    await self.human_delay(3, 5)
                     
-                    # Force a re-check for new containers after scrolling
-                    print("🔄 Re-checking for new users after scroll...")
-                    if is_modal:
-                        new_containers = await self.page.query_selector_all('[role="dialog"] div:has(button:has-text("Following"))')
+                    # Check if new containers appeared
+                    new_containers = await self.get_user_containers(is_modal)
+                    containers_after = len(new_containers)
+                    
+                    print(f"📊 Containers before scroll: {containers_before}, after: {containers_after}")
+                    
+                    if containers_after > containers_before + 2:  # Some tolerance for dynamic content
+                        print(f"✅ Found {containers_after - containers_before} new containers!")
+                        consecutive_no_new_users = 0  # Reset counter
                     else:
-                        new_containers = await self.page.query_selector_all('div:has(button:has-text("Following"))')
-                    
-                    print(f"📊 After scrolling: found {len(new_containers)} total containers (was {len(user_containers)})")
-                    
-                    # If we found significantly more containers, reset the counter
-                    if len(new_containers) > len(user_containers) + 5:
-                        print(f"✅ Found {len(new_containers) - len(user_containers)} new containers after scrolling - continuing")
-                        consecutive_no_new_users = 0
-                    else:
-                        print(f"⚠️  No significant increase in containers detected")
+                        print("⚠️  No significant new content loaded")
                 else:
                     consecutive_no_new_users = 0
                 
-                # Safety check for too many errors
+                # Safety check
                 if errors > 10:
-                    print("⚠️  Too many errors, stopping process")
+                    print("⚠️  Too many errors, stopping")
                     break
             
             print(f"\n🎉 PROCESS COMPLETED")
-            print(f"   • {'Simulated' if dry_run else 'Actual'} unfollows: {unfollowed_count}")
-            print(f"   • Protected accounts: {protected_count}")
+            print(f"   • Unfollowed: {unfollowed_count}")
+            print(f"   • Protected: {protected_count}")
             print(f"   • Errors: {errors}")
             print(f"   • Total processed: {len(processed_users)}")
             
         except Exception as e:
             print(f"❌ Error in unfollow process: {e}")
+            import traceback
+            print(f"❌ Full traceback: {traceback.format_exc()}")
+            print(f"   • Processed {len(processed_users)} users before error")
+            print(f"   • Unfollowed: {unfollowed_count}")
+            print(f"   • Protected: {protected_count}")
+            print(f"   • Errors: {errors}")
     
+    async def get_user_containers(self, is_modal):
+        """Get user containers based on interface type"""
+        user_containers = []
+        
+        if is_modal:
+            # Try main modal selector first
+            try:
+                user_containers = await self.page.query_selector_all(
+                    '[role="dialog"] div[class*="x1dm5mii x16mil14 xi81zsa x1yutycm x1lliihq x193iq5w xh8yej3"]'
+                )
+            except Exception:
+                pass
+            
+            # Try alternative selectors if needed
+            if not user_containers:
+                alternative_selectors = [
+                    '[role="dialog"] div:has(button:has-text("Following"))',
+                    '[role="dialog"] div:has(button:has-text("Siguiendo"))',
+                    '[role="dialog"] > div > div > div > div'
+                ]
+                
+                for selector in alternative_selectors:
+                    try:
+                        user_containers = await self.page.query_selector_all(selector)
+                        if user_containers:
+                            break
+                    except Exception:
+                        continue
+        else:
+            # Page selectors
+            try:
+                user_containers = await self.page.query_selector_all(
+                    'div:has(button:has-text("Following")), div:has(button:has-text("Siguiendo"))'
+                )
+            except Exception:
+                pass
+        
+        return user_containers
+    
+    async def unfollow_user(self, container, username):
+        """Unfollow a specific user immediately"""
+        try:
+            # Find unfollow button
+            unfollow_button = await self.find_unfollow_button(container)
+            
+            if not unfollow_button:
+                print(f"⚠️  No unfollow button found for @{username}")
+                return False
+            
+            # Validate button is still clickable
+            try:
+                await unfollow_button.is_visible()
+                await unfollow_button.is_enabled()
+            except Exception:
+                print(f"⚠️  Button invalid for @{username}")
+                return False
+            
+            # Click unfollow button
+            await unfollow_button.click()
+            await self.human_delay(0.5, 1)
+            
+            # Handle confirmation dialog
+            try:
+                confirm_button = await self.page.wait_for_selector(
+                    'button:has-text("Dejar de seguir"), button:has-text("Unfollow")',
+                    timeout=3000
+                )
+                await confirm_button.click()
+                return True
+                
+            except Exception:
+                print(f"⚠️  Could not confirm unfollow for @{username}")
+                return False
+                
+        except Exception as e:
+            print(f"⚠️  Error unfollowing @{username}: {str(e)[:50]}...")
+            return False
+    
+    async def scroll_for_more_users(self, is_modal):
+        """Scroll to load more users with better verification"""
+        try:
+            if is_modal:
+                # Modal scrolling with verification
+                print("🔄 Scrolling modal down...")
+                try:
+                    # Get current scroll position
+                    before_scroll = await self.page.evaluate('document.querySelector(\'[role="dialog"]\').scrollTop')
+                    print(f"   Before scroll: {before_scroll}")
+                    
+                    # Try multiple scrolling methods
+                    # Method 1: Scroll down incrementally
+                    await self.page.evaluate('document.querySelector(\'[role="dialog"]\').scrollTop += 2000')
+                    await asyncio.sleep(1)
+                    
+                    # Method 2: Scroll to bottom
+                    await self.page.evaluate('document.querySelector(\'[role="dialog"]\').scrollTop = document.querySelector(\'[role="dialog"]\').scrollHeight')
+                    await asyncio.sleep(1)
+                    
+                    # Method 3: Use mouse wheel on modal
+                    try:
+                        modal = await self.page.wait_for_selector('[role="dialog"]', timeout=2000)
+                        if modal:
+                            box = await modal.bounding_box()
+                            if box:
+                                # Move mouse to center of modal
+                                await self.page.mouse.move(box['x'] + box['width']/2, box['y'] + box['height']/2)
+                                # Multiple wheel scrolls
+                                for i in range(10):
+                                    await self.page.mouse.wheel(0, 300)
+                                    await asyncio.sleep(0.2)
+                    except Exception as wheel_error:
+                        print(f"   ⚠️  Mouse wheel failed: {wheel_error}")
+                    
+                    # Check final position
+                    after_scroll = await self.page.evaluate('document.querySelector(\'[role="dialog"]\').scrollTop')
+                    print(f"   After scroll: {after_scroll}")
+                    
+                    # Verify scroll worked
+                    if after_scroll > before_scroll:
+                        print("   ✅ Modal scrolled successfully")
+                        return True
+                    else:
+                        print("   ⚠️  Modal did not scroll - trying alternative method")
+                        
+                        # Alternative: Use keyboard
+                        try:
+                            await self.page.keyboard.press('End')
+                            await asyncio.sleep(1)
+                            await self.page.keyboard.press('PageDown')
+                            await asyncio.sleep(1)
+                            return True
+                        except Exception:
+                            print("   ❌ Keyboard scroll also failed")
+                            return False
+                        
+                except Exception as e:
+                    print(f"   ❌ Modal scroll failed: {e}")
+                    return False
+            else:
+                # Page scrolling with verification
+                print("🔄 Scrolling page down...")
+                try:
+                    before_y = await self.page.evaluate('window.pageYOffset')
+                    print(f"   Before scroll: {before_y}")
+                    
+                    # Multiple scroll methods
+                    await self.page.evaluate('window.scrollBy(0, 2000)')
+                    await asyncio.sleep(1)
+                    await self.page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+                    await asyncio.sleep(1)
+                    
+                    # Mouse wheel as backup
+                    for i in range(5):
+                        await self.page.mouse.wheel(0, 500)
+                        await asyncio.sleep(0.3)
+                    
+                    after_y = await self.page.evaluate('window.pageYOffset')
+                    print(f"   After scroll: {after_y}")
+                    
+                    if after_y > before_y:
+                        print("   ✅ Page scrolled successfully")
+                        return True
+                    else:
+                        print("   ⚠️  Page did not scroll")
+                        return False
+                        
+                except Exception as e:
+                    print(f"   ❌ Page scroll failed: {e}")
+                    return False
+        except Exception as e:
+            print(f"❌ Scroll function error: {e}")
+            return False
+
     async def close_browser(self):
         """Close browser safely"""
         try:
@@ -756,19 +832,17 @@ async def main():
             print("❌ Could not access following list. Exiting...")
             return
         
-        # Run simulation first
-        print(f"\n🔍 Running SIMULATION first...")
-        await bot.process_unfollow_list(dry_run=True)
-        
-        # Ask for confirmation
+        # Ask for final confirmation before starting
         print(f"\n" + "="*45)
-        proceed = input("🚨 Do you want to proceed with REAL unfollows? (type 'YES'): ").strip()
+        print("⚠️  This will start REAL unfollowing immediately!")
+        print("   Only accounts in your trusted_accounts.json will be protected.")
+        proceed = input("🚨 Do you want to proceed? (type 'YES'): ").strip()
         
         if proceed == 'YES':
-            print(f"\n🚀 Starting REAL unfollow process...")
-            await bot.process_unfollow_list(dry_run=False)
+            print(f"\n🚀 Starting real-time unfollow process...")
+            await bot.process_unfollow_list()
         else:
-            print("✅ Finished in simulation mode only")
+            print("✅ Process cancelled by user")
         
         if not headless:
             input("\n🏁 Press Enter to close browser...")
