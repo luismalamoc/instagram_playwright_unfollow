@@ -1,14 +1,18 @@
 # Instagram Playwright Unfollow Bot
 
-This Python script allows you to automatically unfollow Instagram accounts using browser automation while protecting your trusted accounts.
+This Python script helps you unfollow Instagram accounts using browser
+automation while protecting the accounts in your trusted list.
+
+You log in **manually** in the browser window that the script opens, and
+Playwright waits until it detects your session before continuing. This avoids
+the constant breakage caused by Instagram changing its login form and anti-bot
+checks.
 
 ## Prerequisites
 
-Before running the script, ensure you have the following:
-
-- Python 3.x installed on your machine.
+- Python 3.11+ installed (tested with Python 3.14).
 - A stable internet connection.
-- Your Instagram username and password.
+- Your Instagram account (you log in by hand, no password is stored).
 
 ## Setup Instructions
 
@@ -18,69 +22,110 @@ Before running the script, ensure you have the following:
 cd instagram_playwright_unfollow
 ```
 
-### 2. Install Required Python Packages
-
-Install the necessary Python packages using pip:
+### 2. Create and Activate a Virtual Environment
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+### 3. Install Required Python Packages
+
+```bash
+pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### 3. Install Playwright Browsers
+### 4. Install Playwright Browsers
 
-Install the browser engines that Playwright will use:
+Install the browser engine used by the script (Firefox is recommended on macOS):
 
 ```bash
-playwright install
+python -m playwright install firefox
 ```
 
-### 4. Configure Trusted Accounts
+> You can also run `python -m playwright install` to install all browsers.
 
-Edit the `trusted_accounts.json` file and add usernames you want to protect from being unfollowed:
+### 5. Configure Trusted Accounts
+
+Edit the `trusted_accounts.json` file and add the usernames you want to protect
+from being unfollowed under `trusted_usernames`:
 
 ```json
-[
-  "best_friend",
-  "family_member", 
-  "work_account",
-  "important_brand"
-]
+{
+  "trusted_usernames": [
+    "best_friend",
+    "family_member",
+    "work_account",
+    "important_brand"
+  ]
+}
 ```
 
-**Important:** Use usernames WITHOUT the @ symbol.
+**Important:** Use usernames WITHOUT the `@` symbol.
 
-## 5. Run the Script
-
-Run the Python script using the following command:
+## Running the Script
 
 ```bash
 python instagram_unfollow.py
 ```
 
-## 6. Troubleshooting
+You will be asked for:
 
-### Login Issues
+1. **Your Instagram username** (without `@`) — used only to open your profile
+   and your "following" list.
+2. **The browser** to use (Firefox recommended).
 
-- Ensure your username and password are correct.
-- Disable two-factor authentication temporarily if experiencing issues.
-- Try running the script from the same network you usually use for Instagram.
+Then:
+
+1. A browser window opens on the Instagram login page.
+2. **Log in manually** in that window (username, password, and any
+   2FA / verification Instagram asks for).
+3. The script waits (up to 5 minutes) until it detects you are logged in and
+   then continues to the unfollow process.
+4. Confirm when prompted to start unfollowing. Accounts in
+   `trusted_accounts.json` are skipped.
+
+> The browser always runs in **GUI (visible) mode** because the login is done
+> by hand.
+
+## Troubleshooting
+
+### Login Not Detected
+
+- Make sure you finished logging in (including 2FA) within 5 minutes.
+- Complete any "Save your login info?" / "Turn on notifications" prompts.
+- If your interface is in a different language and detection fails, share what
+  is on screen after logging in so the detection selectors can be adjusted.
 
 ### Browser Not Opening
 
 ```bash
-playwright install
+python -m playwright install firefox
 ```
 
-### Python Version Issues
+### Python Version / Install Issues (greenlet build errors)
 
-- Use Python 3.10, 3.11, or 3.12 (Python 3.13 has compatibility issues).
-- Create a virtual environment and activate it before running the script.
+The pinned dependencies require prebuilt wheels for your Python version.
+
+- This project is pinned to `playwright==1.61.0`, which ships wheels compatible
+  with Python 3.14.
+- If you see a `greenlet` compilation error, you are likely mixing an old
+  Playwright version with a very new Python. Recreate the virtual environment
+  and reinstall from `requirements.txt`:
+
+  ```bash
+  rm -rf .venv
+  python3 -m venv .venv
+  source .venv/bin/activate
+  pip install -r requirements.txt
+  python -m playwright install firefox
+  ```
 
 ### General Tips
 
-- The script uses Firefox or WebKit browsers for better compatibility on macOS.
-- If Instagram detects automation, the script will handle it gracefully.
-- Keep your trusted_accounts.json file updated with important accounts.
+- Firefox tends to be the most stable option for GUI mode on macOS.
+- Keep your `trusted_accounts.json` file updated with important accounts.
 
 ## License
 
