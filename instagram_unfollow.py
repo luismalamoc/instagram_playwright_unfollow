@@ -175,66 +175,69 @@ class InstagramPlaywrightBot:
             await self.close_browser()
             raise
     
-    async def login_to_instagram(self):
-        """Login to Instagram with human-like behavior"""
-        print("🔐 Logging into Instagram...")
-        
-        try:
-            # Navigate to Instagram
-            await self.page.goto('https://www.instagram.com/accounts/login/', wait_until='networkidle', timeout=30000)
-            await self.human_delay(2, 4)
-            
-            # Wait for and fill username
-            print("📝 Filling username...")
-            username_input = await self.page.wait_for_selector('input[name="username"]', timeout=10000)
-            await username_input.click()
-            await self.human_delay(0.5, 1)
-            await username_input.fill(self.username)
-            
-            await self.human_delay(0.5, 1)
-            
-            # Fill password
-            print("📝 Filling password...")
-            password_input = await self.page.wait_for_selector('input[name="password"]')
-            await password_input.click()
-            await self.human_delay(0.3, 0.7)
-            await password_input.fill(self.password)
-            
-            await self.human_delay(1, 2)
-            
-            # Click login button
-            print("🔑 Clicking login...")
-            login_button = await self.page.wait_for_selector('button[type="submit"]')
-            await login_button.click()
-            
-            print("⏳ Waiting for login...")
-            await self.human_delay(5, 8)
-            
-            # Check if login was successful
+    async def accept_cookies_if_present(self):
+        """Dismiss the Instagram cookie consent banner if it shows up."""
+        cookie_buttons = [
+            'button:has-text("Allow all cookies")',
+            'button:has-text("Permitir todas las cookies")',
+            'button:has-text("Accept All")',
+            'button:has-text("Aceptar todo")',
+            'button:has-text("Only allow essential cookies")',
+            'button:has-text("Permitir solo cookies esenciales")',
+        ]
+        for selector in cookie_buttons:
             try:
-                # Look for home page indicators or profile elements
-                await self.page.wait_for_selector(
-                    'svg[aria-label="Home"], svg[aria-label="Inicio"], [role="main"], nav[role="navigation"]', 
-                    timeout=15000
-                )
-                print("✅ Login successful!")
-                return True
-                
-            except:
-                # Check for error messages
-                try:
-                    error_element = await self.page.wait_for_selector(
-                        '[data-testid="login-error-message"], .eiCW- span, #slfErrorAlert', 
-                        timeout=2000
-                    )
-                    error_text = await error_element.text_content()
-                    print(f"❌ Login failed: {error_text}")
-                except:
-                    print("❌ Login failed: Could not determine error")
-                return False
-                
+                button = await self.page.wait_for_selector(selector, timeout=2500)
+                if button:
+                    await button.click()
+                    print("🍪 Cookie banner dismissed")
+                    await self.human_delay(1, 2)
+                    return
+            except Exception:
+                continue
+
+    async def login_to_instagram(self):
+        """Open Instagram and wait for the user to log in manually.
+
+        Instagram changes its login form and anti-bot checks frequently, so
+        instead of automating the login we let the user sign in by hand in the
+        browser window and simply wait until we detect a logged-in session.
+        """
+        print("🔐 Waiting for manual login...")
+
+        try:
+            # Navigate to Instagram login page
+            await self.page.goto('https://www.instagram.com/accounts/login/', wait_until='domcontentloaded', timeout=30000)
+            await self.human_delay(1, 2)
+
+            # Dismiss the cookie banner if present so it doesn't block the form
+            await self.accept_cookies_if_present()
+
+            print("\n" + "=" * 45)
+            print("👉 Please log in MANUALLY in the browser window that opened.")
+            print("   Type your username and password there and press Log in.")
+            print("   Complete any 2FA / verification if Instagram asks for it.")
+            print("⏳ Waiting up to 5 minutes for you to finish logging in...")
+            print("=" * 45 + "\n")
+
+            # Indicators that only appear once the user is logged in
+            logged_in_selectors = (
+                'svg[aria-label="Home"], svg[aria-label="Inicio"], '
+                'svg[aria-label="New post"], svg[aria-label="Nueva publicación"], '
+                'a[href="/direct/inbox/"], a[href*="/direct/"], '
+                'span[role="link"] img[alt*="profile photo" i]'
+            )
+
+            # Wait (up to 5 minutes) until a logged-in indicator shows up
+            await self.page.wait_for_selector(logged_in_selectors, timeout=300000)
+
+            print("✅ Login detected! Continuing...")
+            await self.human_delay(1, 2)
+            return True
+
         except Exception as e:
-            print(f"❌ Login error: {e}")
+            print(f"❌ Login wait error: {e}")
+            print("   (Did you finish logging in within 5 minutes?)")
             return False
     
     async def navigate_to_following(self):
@@ -789,12 +792,12 @@ async def main():
         return
     
     # Get user input
-    username = input("📱 Instagram Username: ").strip()
-    password = input("🔒 Password: ").strip()
-    
-    if not username or not password:
-        print("❌ Username and password are required!")
+    username = input("📱 Instagram Username (without @): ").strip()
+
+    if not username:
+        print("❌ Username is required (needed to open your profile)!")
         return
+    password = ""  # Not used anymore: login is done manually in the browser
     
     # Ask about browser choice
     print("\n🌐 Choose your browser:")
@@ -811,9 +814,9 @@ async def main():
     }
     browser_type = browser_map.get(browser_choice, "firefox")
     
-    # Ask about headless mode
-    headless_choice = input("🖥️  Use GUI mode to see what happens? (Y/n): ").strip().lower()
-    headless = headless_choice == 'n'
+    # Manual login requires a visible browser window, so GUI mode is mandatory
+    headless = False
+    print("🖥️  GUI mode enabled (required for manual login)")
     
     # Create bot instance
     bot = InstagramPlaywrightBot(username, password, headless=headless, browser_type=browser_type)
@@ -822,7 +825,7 @@ async def main():
         # Start browser
         await bot.start_browser()
         
-        # Login
+        # Wait for manual login
         if not await bot.login_to_instagram():
             print("❌ Login failed. Exiting...")
             return
