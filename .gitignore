@@ -2,6 +2,9 @@
 *.session
 session.json
 
+# Perfil persistente del navegador (sesión/cookies)
+ig_user_data/
+
 # Python
 __pycache__/
 *.py[cod]

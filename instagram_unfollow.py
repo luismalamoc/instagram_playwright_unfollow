@@ -10,6 +10,11 @@ import sys
 import os
 from playwright.async_api import async_playwright, Page, Browser
 
+# Directory where the persistent browser profile (session/cookies) is stored,
+# so you only have to log in manually once.
+HERE = os.path.dirname(os.path.abspath(__file__))
+USER_DATA_DIR = os.path.join(HERE, "ig_user_data")
+
 async def check_playwright_installation():
     """Check if Playwright and browsers are properly installed"""
     try:
@@ -42,7 +47,7 @@ async def check_playwright_installation():
             return False
 
 class InstagramPlaywrightBot:
-    def __init__(self, username: str, password: str, headless: bool = False, browser_type: str = "firefox"):
+    def __init__(self, username: str, password: str, headless: bool = False, browser_type: str = "chromium"):
         self.username = username
         self.password = password
         self.headless = headless
@@ -93,7 +98,7 @@ class InstagramPlaywrightBot:
         await asyncio.sleep(delay)
     
     async def start_browser(self):
-        """Initialize Playwright browser with stealth settings"""
+        """Initialize Playwright with a PERSISTENT context (session is saved)."""
         print("🚀 Starting browser...")
         
         try:
@@ -102,66 +107,43 @@ class InstagramPlaywrightBot:
             
             self.playwright = await async_playwright().start()
             
-            # Choose browser based on type and mode
+            # Choose browser based on type
             if self.browser_type == "firefox":
                 print("🦊 Using Firefox browser")
                 browser_instance = self.playwright.firefox
+                user_agent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:119.0) Gecko/20100101 Firefox/119.0'
             elif self.browser_type == "webkit":
                 print("🧭 Using WebKit browser")
                 browser_instance = self.playwright.webkit
+                user_agent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15'
             else:  # chromium
                 print("🌐 Using Chromium browser")
                 browser_instance = self.playwright.chromium
-            
-            # Launch browser
-            if not self.headless and self.browser_type == "chromium":
-                print("⚠️  Chromium GUI mode may be unstable on this system")
-                print("🔄 Trying Chromium with enhanced stability settings...")
-                
-                try:
-                    self.browser = await browser_instance.launch(
-                        headless=False,
-                        args=['--no-sandbox'],
-                        slow_mo=100
-                    )
-                except Exception as e:
-                    print(f"❌ Chromium GUI failed: {e}")
-                    print("🔄 Falling back to headless mode...")
-                    self.headless = True
-                    self.browser = await browser_instance.launch(
-                        headless=True,
-                        args=['--no-sandbox', '--disable-dev-shm-usage']
-                    )
-            else:
-                # Firefox/WebKit or headless mode
-                launch_args = {}
-                if self.browser_type == "chromium":
-                    launch_args["args"] = ['--no-sandbox', '--disable-dev-shm-usage']
-                
-                self.browser = await browser_instance.launch(
-                    headless=self.headless,
-                    **launch_args
-                )
-            
-            # Create context with appropriate user agent
-            if self.browser_type == "firefox":
-                user_agent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:119.0) Gecko/20100101 Firefox/119.0'
-            elif self.browser_type == "webkit":
-                user_agent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15'
-            else:
                 user_agent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             
-            self.context = await self.browser.new_context(
+            # Chromium-only launch args
+            launch_args = []
+            if self.browser_type == "chromium":
+                launch_args = ['--no-sandbox', '--disable-blink-features=AutomationControlled']
+            
+            # Persistent context: cookies/session are saved in USER_DATA_DIR so
+            # you only need to log in manually once.
+            print(f"💾 Using persistent profile: {USER_DATA_DIR}")
+            self.context = await browser_instance.launch_persistent_context(
+                USER_DATA_DIR,
+                headless=self.headless,
                 user_agent=user_agent,
                 viewport={'width': 1366, 'height': 768},
-                ignore_https_errors=True
+                ignore_https_errors=True,
+                slow_mo=100 if (not self.headless and self.browser_type == "chromium") else 0,
+                args=launch_args,
             )
             
-            # Add small delay before creating page
-            await asyncio.sleep(0.5)
+            # A persistent context has no separate browser object
+            self.browser = None
             
-            # Create page
-            self.page = await self.context.new_page()
+            # Reuse the first page or create one
+            self.page = self.context.pages[0] if self.context.pages else await self.context.new_page()
             
             # Set default timeouts
             self.page.set_default_timeout(30000)
@@ -206,6 +188,25 @@ class InstagramPlaywrightBot:
         print("🔐 Waiting for manual login...")
 
         try:
+            # Indicators that only appear once the user is logged in
+            logged_in_selectors = (
+                'svg[aria-label="Home"], svg[aria-label="Inicio"], '
+                'svg[aria-label="New post"], svg[aria-label="Nueva publicación"], '
+                'a[href="/direct/inbox/"], a[href*="/direct/"], '
+                'span[role="link"] img[alt*="profile photo" i]'
+            )
+
+            # First, check if the persistent session is already logged in
+            await self.page.goto('https://www.instagram.com/', wait_until='domcontentloaded', timeout=30000)
+            await self.human_delay(2, 3)
+            try:
+                await self.page.wait_for_selector(logged_in_selectors, timeout=6000)
+                print("✅ Existing session detected! Skipping manual login.")
+                await self.human_delay(1, 2)
+                return True
+            except Exception:
+                pass  # No active session, fall through to manual login
+
             # Navigate to Instagram login page
             await self.page.goto('https://www.instagram.com/accounts/login/', wait_until='domcontentloaded', timeout=30000)
             await self.human_delay(1, 2)
@@ -217,16 +218,9 @@ class InstagramPlaywrightBot:
             print("👉 Please log in MANUALLY in the browser window that opened.")
             print("   Type your username and password there and press Log in.")
             print("   Complete any 2FA / verification if Instagram asks for it.")
+            print("   Your session will be SAVED for next runs.")
             print("⏳ Waiting up to 5 minutes for you to finish logging in...")
             print("=" * 45 + "\n")
-
-            # Indicators that only appear once the user is logged in
-            logged_in_selectors = (
-                'svg[aria-label="Home"], svg[aria-label="Inicio"], '
-                'svg[aria-label="New post"], svg[aria-label="Nueva publicación"], '
-                'a[href="/direct/inbox/"], a[href*="/direct/"], '
-                'span[role="link"] img[alt*="profile photo" i]'
-            )
 
             # Wait (up to 5 minutes) until a logged-in indicator shows up
             await self.page.wait_for_selector(logged_in_selectors, timeout=300000)
@@ -801,18 +795,18 @@ async def main():
     
     # Ask about browser choice
     print("\n🌐 Choose your browser:")
-    print("1. Firefox (🦊 - Recommended, stable GUI)")
-    print("2. WebKit/Safari (🧭 - Good alternative)")  
-    print("3. Chromium (🌐 - May have GUI issues on macOS)")
+    print("1. Chromium (🌐 - Recommended, keeps the session between iterations)")
+    print("2. Firefox (🦊 - Alternative)")
+    print("3. WebKit/Safari (🧭 - Alternative)")
     
     browser_choice = input("Enter choice (1/2/3, default 1): ").strip() or "1"
     
     browser_map = {
-        "1": "firefox",
-        "2": "webkit", 
-        "3": "chromium"
+        "1": "chromium",
+        "2": "firefox",
+        "3": "webkit"
     }
-    browser_type = browser_map.get(browser_choice, "firefox")
+    browser_type = browser_map.get(browser_choice, "chromium")
     
     # Manual login requires a visible browser window, so GUI mode is mandatory
     headless = False
